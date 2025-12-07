@@ -1,0 +1,3 @@
+"""Speech Coach FastAPI package."""
+
+

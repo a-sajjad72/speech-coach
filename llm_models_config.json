@@ -1,0 +1,132 @@
+{
+    "app_settings": {
+      "min_ram_for_xtts_gb": 8,
+      "fallback_tts_engine": "system_native" 
+    },
+    "hardware_tiers": [
+      {
+        "tier_id": "low_resource",
+        "min_ram_gb": 4,
+        "max_ram_gb": 7.9,
+        "xtts_supported": false,
+        "warning_message": "Low RAM detected (4GB). High-quality voice (XTTS) has been disabled to prevent crashing.",
+        "models": [
+          {
+            "name": "Llama 3.2 (1B)",
+            "ollama_tag": "llama3.2:1b",
+            "role": "Basic Fallback",
+            "description": "An extremely lightweight model. Limited intelligence, but the only option that runs smoothly on 4GB RAM.",
+            "is_primary_recommendation": true
+          }
+        ]
+      },
+      {
+        "tier_id": "entry_level",
+        "min_ram_gb": 8,
+        "max_ram_gb": 15.9,
+        "xtts_supported": true,
+        "models": [
+          {
+            "name": "Llama 3.2 (3B)",
+            "ollama_tag": "llama3.2:3b",
+            "role": "Best Generalist",
+            "description": "Meta's state-of-the-art small model. Excellent at following instructions and responds quickly. Best all-around choice for this computer.",
+            "is_primary_recommendation": true
+          },
+          {
+            "name": "Phi-3.5 Mini",
+            "ollama_tag": "phi3.5",
+            "role": "Logic Specialist",
+            "description": "Best for explaining complex grammar rules (e.g., 'Why is this sentence wrong?'). Has a slightly more formal tone.",
+            "is_primary_recommendation": false
+          },
+          {
+            "name": "Qwen 2.5 (3B)",
+            "ollama_tag": "qwen2.5:3b",
+            "role": "Multilingual Pro",
+            "description": "Choose this if you are practicing languages other than English (Spanish, Chinese, French, etc.). Superior translation skills.",
+            "is_primary_recommendation": false
+          },
+          {
+            "name": "Gemma 2 (2B)",
+            "ollama_tag": "gemma2:2b",
+            "role": "High Speed",
+            "description": "Very lightweight. Use this if the Llama model feels too slow or sluggish on your system.",
+            "is_primary_recommendation": false
+          }
+        ]
+      },
+      {
+        "tier_id": "standard",
+        "min_ram_gb": 16,
+        "max_ram_gb": 31.9,
+        "xtts_supported": true,
+        "models": [
+          {
+            "name": "Llama 3.1 (8B)",
+            "ollama_tag": "llama3.1:8b",
+            "role": "The Standard",
+            "description": "The industry benchmark. Smart, reliable, and handles general conversation perfectly. Recommended for most users.",
+            "is_primary_recommendation": true
+          },
+          {
+            "name": "Mistral v0.3",
+            "ollama_tag": "mistral",
+            "role": "Concise Tutor",
+            "description": "Provides shorter, punchier responses than Llama. Good for quick practice sessions where you want direct answers.",
+            "is_primary_recommendation": false
+          },
+          {
+            "name": "Gemma 2 (9B)",
+            "ollama_tag": "gemma2:9b",
+            "role": "Creative Partner",
+            "description": "Less robotic tone. Ideal for storytelling, creative writing practice, or casual chat.",
+            "is_primary_recommendation": false
+          },
+          {
+            "name": "Hermes 3",
+            "ollama_tag": "hermes3",
+            "role": "Roleplay / Casual",
+            "description": "An uncensored model. Better for practicing casual, 'street' slang or roleplay scenarios without excessive safety refusals.",
+            "is_primary_recommendation": false
+          },
+          {
+            "name": "DeepSeek Coder",
+            "ollama_tag": "deepseek-coder",
+            "role": "Technical English",
+            "description": "Specifically optimized for users practicing Technical English for IT or Engineering job interviews.",
+            "is_primary_recommendation": false
+          }
+        ]
+      },
+      {
+        "tier_id": "high_performance",
+        "min_ram_gb": 32,
+        "max_ram_gb": 999,
+        "xtts_supported": true,
+        "models": [
+          {
+            "name": "Mistral Nemo (12B)",
+            "ollama_tag": "mistral-nemo",
+            "role": "Smart Mid-Size",
+            "description": "A significant jump in intelligence over 8B models. Fits easily in your high-end system.",
+            "is_primary_recommendation": true
+          },
+          {
+            "name": "Phi-4 (14B)",
+            "ollama_tag": "phi4",
+            "role": "Reasoning Pro",
+            "description": "Microsoft's latest model. Exceptional at breaking down linguistic nuances and complex sentence structures.",
+            "is_primary_recommendation": false
+          },
+          {
+            "name": "Qwen 2.5 (32B)",
+            "ollama_tag": "qwen2.5:32b",
+            "role": "The Heavyweight",
+            "description": "Professional-grade capability approaching GPT-4 class. Best for Advanced (C1/C2) level proficiency practice.",
+            "is_primary_recommendation": false
+          }
+        ]
+      }
+    ]
+  }
