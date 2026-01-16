@@ -5,17 +5,26 @@ import type React from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Send, Mic } from "lucide-react"
+import { Send, Mic, Square, X } from "lucide-react"
 import { AudioVisualizer } from "@/components/audio-visualizer"
 
 interface ChatInputProps {
   onSendText: (text: string) => void
   onStartVoiceRecording: () => void
+  onStopVoiceRecording: () => void
+  onCancelVoiceRecording: () => void
   isRecording: boolean
   isProcessing: boolean
 }
 
-export function ChatInput({ onSendText, onStartVoiceRecording, isRecording, isProcessing }: ChatInputProps) {
+export function ChatInput({
+  onSendText,
+  onStartVoiceRecording,
+  onStopVoiceRecording,
+  onCancelVoiceRecording,
+  isRecording,
+  isProcessing
+}: ChatInputProps) {
   const [textInput, setTextInput] = useState("")
 
   const handleSendText = () => {
@@ -37,10 +46,33 @@ export function ChatInput({ onSendText, onStartVoiceRecording, isRecording, isPr
       <div className="max-w-4xl mx-auto">
         {/* Recording Status */}
         {isRecording && (
-          <div className="mb-4 flex items-center space-x-3 px-4 py-3 bg-red-50 rounded-xl border border-red-200">
-            <div className="h-2 w-2 bg-red-500 rounded-full animate-pulse" />
-            <span className="text-sm font-medium text-red-600">Recording in progress...</span>
-            <AudioVisualizer isActive={true} size="sm" />
+          <div className="mb-4 flex items-center justify-between px-4 py-3 bg-red-50 rounded-xl border border-red-200">
+            <div className="flex items-center space-x-3">
+              <div className="h-2 w-2 bg-red-500 rounded-full animate-pulse" />
+              <span className="text-sm font-medium text-red-600">Recording in progress...</span>
+              <AudioVisualizer isActive={true} size="sm" />
+            </div>
+            <div className="flex items-center space-x-2">
+              {/* Stop Recording (Send) */}
+              <Button
+                onClick={onStopVoiceRecording}
+                className="bg-green-500 hover:bg-green-600 text-white rounded-lg px-3 py-1 text-sm"
+                size="sm"
+              >
+                <Square className="h-3 w-3 mr-1" />
+                Stop & Send
+              </Button>
+              {/* Cancel Recording */}
+              <Button
+                onClick={onCancelVoiceRecording}
+                variant="outline"
+                className="border-red-300 text-red-600 hover:bg-red-50 rounded-lg px-3 py-1 text-sm"
+                size="sm"
+              >
+                <X className="h-3 w-3 mr-1" />
+                Cancel
+              </Button>
+            </div>
           </div>
         )}
 
@@ -68,21 +100,19 @@ export function ChatInput({ onSendText, onStartVoiceRecording, isRecording, isPr
           </Button>
 
           {/* Voice Record Button */}
-          <Button
-            onClick={onStartVoiceRecording}
-            disabled={isProcessing}
-            className={`rounded-full px-3 md:px-4 h-10 md:h-11 transition-all duration-300 ${
-              isRecording
-                ? "bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 animate-pulse"
-                : "bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-600 hover:to-cyan-600"
-            }`}
-          >
-            <Mic className="h-4 w-4" />
-          </Button>
+          {!isRecording && (
+            <Button
+              onClick={onStartVoiceRecording}
+              disabled={isProcessing}
+              className="bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-600 hover:to-cyan-600 rounded-full px-3 md:px-4 h-10 md:h-11"
+            >
+              <Mic className="h-4 w-4" />
+            </Button>
+          )}
         </div>
 
         <p className="text-xs md:text-sm text-gray-500 mt-3 text-center">
-          {isProcessing ? "Processing..." : "Press Enter to send or use the voice button"}
+          {isProcessing ? "Processing..." : isRecording ? "Click 'Stop & Send' to submit or 'Cancel' to discard" : "Press Enter to send or use the voice button"}
         </p>
       </div>
     </div>

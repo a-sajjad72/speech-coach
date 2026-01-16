@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -11,6 +12,15 @@ DB_PATH = BASE_DIR / "server" / "data" / "app.db"
 
 OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 DB_PATH.parent.mkdir(exist_ok=True, parents=True)
+
+# Storage Configuration
+STORAGE_CONFIG = {
+    "STORAGE_TYPE": os.getenv("STORAGE_TYPE", "local"),  # local or s3
+    "S3_BUCKET_NAME": os.getenv("S3_BUCKET_NAME"),
+    "S3_REGION": os.getenv("S3_REGION"),
+    "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
+    "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
+}
 
 
 def load_json(path: Path):

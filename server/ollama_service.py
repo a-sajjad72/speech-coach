@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import os
+from concurrent.futures import Executor
 from typing import List, Dict, Any
 
 from ollama import Client, ResponseError  # type: ignore
@@ -84,20 +86,39 @@ class OllamaService:
             finally:
                 logger.info("Pull completed model=%s", model)
 
-    def chat(self, messages: List[Dict[str, str]], model: str | None = None) -> str:
-        target_model = model or self.default_model
-        # Ensure requested model is available
-        if target_model != self.default_model:
-            self._ensure_model_pulled(target_model)
-        else:
-            # Pull default lazily on first use
-            self._ensure_model_pulled(target_model)
+    def _chat_sync(self, messages: List[Dict[str, str]], model: str) -> str:
+        """Blocking internal method for chat."""
         try:
-            logger.info("Calling Ollama model=%s msgs=%s", target_model, len(messages))
-            response = self.client.chat(model=target_model, messages=messages)
+            logger.info("Calling Ollama model=%s msgs=%s", model, len(messages))
+            response = self.client.chat(model=model, messages=messages)
             return response["message"]["content"]
         except ResponseError as exc:
             # Surface meaningful message
             raise RuntimeError(f"Ollama chat failed: {exc}") from exc
+
+    async def chat(self, messages: List[Dict[str, str]], model: str | None = None) -> str:
+        target_model = model or self.default_model
+        
+        # We can pull in the main thread (blocking) or offload it too. 
+        # Pulling is rare (once per model), so leaving it sync or partly sync is okay, 
+        # but let's be safe. _ensure_model_pulled interacts with tqdm which might be cleaner on main thread 
+        # or we might want to check it quickly. 
+        # However, `chat` is the main loop. 
+        
+        # NOTE: _ensure_model_pulled calls client.pull which is network IO. 
+        # Ideally that should be async too. But let's stick to the main chat function first.
+        # We will keep _ensure_model_pulled as is for now, assuming models are largely present or the user accepts the wait.
+        # If we really want non-blocking pull, we'd need more work. 
+        
+        loop = asyncio.get_running_loop()
+        
+        # Ensure requested model is available (this might block, but it's okay for now as it's a "setup" step)
+        if target_model != self.default_model:
+            await loop.run_in_executor(None, self._ensure_model_pulled, target_model)
+        else:
+             # Lazy check for default
+            await loop.run_in_executor(None, self._ensure_model_pulled, target_model)
+
+        return await loop.run_in_executor(None, self._chat_sync, messages, target_model)
 
 

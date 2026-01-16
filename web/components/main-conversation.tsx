@@ -13,6 +13,7 @@ import { FeedbackButtons } from "@/components/feedback-buttons"
 import { MobileSidebar } from "@/components/mobile-sidebar"
 import { ChatInput } from "@/components/chat-input"
 import { CallModeOverlay } from "@/components/call-mode-overlay"
+import { apiClient } from "@/lib/api-client"
 
 interface Message {
   id: string
@@ -20,6 +21,7 @@ interface Message {
   text: string
   timestamp: Date
   isPlaying?: boolean
+  audioUrl?: string
 }
 
 interface MainConversationProps {
@@ -41,14 +43,7 @@ export function MainConversation({
   onTopicChange,
   onModelChange,
 }: MainConversationProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      type: "ai",
-      text: "¡Hola! I'm your Spanish conversation coach. Let's practice talking about travel planning. Where would you like to go on your next vacation?",
-      timestamp: new Date(),
-    },
-  ])
+  const [messages, setMessages] = useState<Message[]>([])
   const [isRecording, setIsRecording] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [customTopic, setCustomTopic] = useState("")
@@ -58,8 +53,9 @@ export function MainConversation({
   const [showModelSelect, setShowModelSelect] = useState(false)
   const [showMobileSidebar, setShowMobileSidebar] = useState(false)
   const [isInCallMode, setIsInCallMode] = useState(false)
-  const [pendingMessages, setPendingMessages] = useState<Message[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const audioRecorderRef = useRef<MediaRecorder | null>(null)
 
   const languages = [
     "Spanish",
@@ -104,14 +100,45 @@ export function MainConversation({
     scrollToBottom()
   }, [messages])
 
-  const handleCallEnd = () => {
-    setTimeout(() => {
-      setMessages((prev) => [...prev, ...pendingMessages])
-      setPendingMessages([])
-    }, 500)
+  // Initialize session on mount
+  useEffect(() => {
+    const initSession = async () => {
+      try {
+        const response = await apiClient.createSession("chat")
+        setSessionId(response.session_id)
+        console.log("Session created:", response.session_id)
+      } catch (error) {
+        console.error("Failed to create session:", error)
+      }
+    }
+    initSession()
+  }, [])
+
+  const handleCallEnd = async () => {
+    // Reload chat history after call ends
+    if (sessionId) {
+      try {
+        const history = await apiClient.getChatHistory(sessionId)
+        const formattedMessages: Message[] = history.messages.map((msg, idx) => ({
+          id: String(idx),
+          type: msg.sender === "user" ? "user" : "ai",
+          text: msg.text,
+          timestamp: new Date(msg.timestamp || Date.now()),
+          audioUrl: msg.audio_path || undefined,
+        }))
+        setMessages(formattedMessages)
+      } catch (error) {
+        console.error("Failed to load chat history:", error)
+      }
+    }
   }
 
-  const handleSendText = (text: string) => {
+  const handleSendText = async (text: string) => {
+    if (!sessionId) {
+      console.error("No session ID")
+      return
+    }
+
     const userMessage: Message = {
       id: Date.now().toString(),
       type: "user",
@@ -121,55 +148,163 @@ export function MainConversation({
     setMessages((prev) => [...prev, userMessage])
     setIsProcessing(true)
 
-    setTimeout(() => {
+    try {
+      const response = await apiClient.sendTextMessage(sessionId, text, {
+        model: null,
+        speaker: null,
+        ttsModel: null,
+      })
+
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: "ai",
-        text: "That's a great point! Let me provide some feedback on your message and suggest how you could phrase it differently in this language context.",
+        text: response.coach_reply,
         timestamp: new Date(),
         isPlaying: true,
+        audioUrl: response.coach_audio_url,
       }
       setMessages((prev) => [...prev, aiMessage])
-      setIsProcessing(false)
 
-      setTimeout(() => {
+      // Play audio - ensure URL is correctly formatted
+      const audioUrl = response.coach_audio_url.startsWith("http")
+        ? response.coach_audio_url
+        : `http://localhost:8000${response.coach_audio_url}`
+
+      console.log("Playing audio from:", audioUrl)
+      const audio = new Audio(audioUrl)
+
+      audio.play().catch((error) => {
+        console.error("Audio playback failed:", error)
+        // Update playing state even if playback fails
         setMessages((prev) => prev.map((msg) => (msg.id === aiMessage.id ? { ...msg, isPlaying: false } : msg)))
-      }, 3000)
-    }, 1500)
+      })
+
+      audio.onended = () => {
+        setMessages((prev) => prev.map((msg) => (msg.id === aiMessage.id ? { ...msg, isPlaying: false } : msg)))
+      }
+    } catch (error) {
+      console.error("Failed to send text message:", error)
+    } finally {
+      setIsProcessing(false)
+    }
   }
 
-  const handleStartRecording = () => {
-    setIsRecording(true)
-    setTimeout(() => {
-      setIsRecording(false)
-      setIsProcessing(true)
+  const handleStartRecording = async () => {
+    if (!sessionId) {
+      console.error("No session ID")
+      return
+    }
 
-      setTimeout(() => {
-        const userMessage: Message = {
-          id: Date.now().toString(),
-          type: "user",
-          text: "Me gustaría visitar Barcelona el próximo verano. ¿Qué lugares recomiendas?",
-          timestamp: new Date(),
+    try {
+      // Get microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+      // Create MediaRecorder
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" })
+      const chunks: Blob[] = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data)
         }
-        setMessages((prev) => [...prev, userMessage])
+      }
 
-        setTimeout(() => {
+      recorder.onstop = async () => {
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop())
+
+        // Create blob from chunks
+        const audioBlob = new Blob(chunks, { type: "audio/webm" })
+
+        // Send to server
+        setIsRecording(false)
+        setIsProcessing(true)
+
+        try {
+          const response = await apiClient.processAudio(sessionId, audioBlob, {
+            model: null,
+            speaker: null,
+            ttsModel: null,
+          })
+
+          const userMessage: Message = {
+            id: Date.now().toString(),
+            type: "user",
+            text: response.user_transcript,
+            timestamp: new Date(),
+          }
+          setMessages((prev) => [...prev, userMessage])
+
           const aiMessage: Message = {
             id: (Date.now() + 1).toString(),
             type: "ai",
-            text: "¡Excelente elección! Barcelona es una ciudad maravillosa. Te recomiendo visitar la Sagrada Familia, el Parque Güell, y Las Ramblas. ¿Te interesa más la arquitectura de Gaudí o prefieres las playas?",
+            text: response.coach_reply,
             timestamp: new Date(),
             isPlaying: true,
+            audioUrl: response.coach_audio_url,
           }
           setMessages((prev) => [...prev, aiMessage])
-          setIsProcessing(false)
 
-          setTimeout(() => {
+          // Play audio - ensure URL is correctly formatted
+          const audioUrl = response.coach_audio_url.startsWith("http")
+            ? response.coach_audio_url
+            : `http://localhost:8000${response.coach_audio_url}`
+
+          console.log("Playing audio from:", audioUrl)
+          const audio = new Audio(audioUrl)
+
+          audio.play().catch((error) => {
+            console.error("Audio playback failed:", error)
             setMessages((prev) => prev.map((msg) => (msg.id === aiMessage.id ? { ...msg, isPlaying: false } : msg)))
-          }, 3000)
-        }, 1500)
-      }, 2000)
-    }, 3000)
+          })
+
+          audio.onended = () => {
+            setMessages((prev) => prev.map((msg) => (msg.id === aiMessage.id ? { ...msg, isPlaying: false } : msg)))
+          }
+        } catch (error) {
+          console.error("Failed to process audio:", error)
+        } finally {
+          setIsProcessing(false)
+        }
+      }
+
+      // Store recorder reference
+      audioRecorderRef.current = recorder as any
+
+      // Start recording
+      recorder.start()
+      setIsRecording(true)
+
+    } catch (error) {
+      console.error("Failed to start recording:", error)
+      alert("Failed to access microphone. Please grant permission and try again.")
+    }
+  }
+
+  const handleStopRecording = () => {
+    if (audioRecorderRef.current && audioRecorderRef.current.state === "recording") {
+      audioRecorderRef.current.stop()
+    }
+  }
+
+  const handleCancelRecording = () => {
+    if (audioRecorderRef.current) {
+      // Stop the recorder without processing
+      const recorder = audioRecorderRef.current as MediaRecorder
+
+      // Remove the onstop handler to prevent processing
+      recorder.onstop = () => {
+        // Just stop the stream tracks
+        recorder.stream.getTracks().forEach(track => track.stop())
+      }
+
+      if (recorder.state === "recording") {
+        recorder.stop()
+      }
+
+      audioRecorderRef.current = null
+      setIsRecording(false)
+    }
   }
 
   const handleTopicSubmit = () => {
@@ -209,26 +344,6 @@ export function MainConversation({
 
   const handleStartCall = () => {
     setIsInCallMode(true)
-    setPendingMessages([
-      {
-        id: Date.now().toString(),
-        type: "ai",
-        text: "Great! Let's have a conversation practice session. I'll speak naturally and you respond as if we're having a real conversation.",
-        timestamp: new Date(),
-      },
-      {
-        id: (Date.now() + 1).toString(),
-        type: "user",
-        text: "Perfect! I'm ready to practice.",
-        timestamp: new Date(),
-      },
-      {
-        id: (Date.now() + 2).toString(),
-        type: "ai",
-        text: "Wonderful! Remember to speak clearly and don't worry about making mistakes. That's how we learn!",
-        timestamp: new Date(),
-      },
-    ])
   }
 
   const handleClearConversation = () => {
@@ -280,11 +395,11 @@ export function MainConversation({
   const handleReportIssue = () => {
     alert(
       "Thank you for reporting an issue! Please describe the problem and we'll investigate it.\n\nSession Info:\nLanguage: " +
-        language +
-        "\nTopic: " +
-        topic +
-        "\nMessages: " +
-        messages.length,
+      language +
+      "\nTopic: " +
+      topic +
+      "\nMessages: " +
+      messages.length,
     )
   }
 
@@ -298,7 +413,6 @@ export function MainConversation({
       },
     ])
     setIsProcessing(false)
-    setPendingMessages([])
   }
 
   return (
@@ -589,11 +703,10 @@ export function MainConversation({
                   className={`max-w-[85%] md:max-w-[70%] ${message.type === "user" ? "ml-4 md:ml-20" : "mr-4 md:mr-20"}`}
                 >
                   <Card
-                    className={`p-3 md:p-5 shadow-lg border-0 rounded-2xl md:rounded-3xl ${
-                      message.type === "user"
-                        ? "bg-gradient-to-r from-purple-500 to-purple-600 text-white"
-                        : "bg-white text-gray-800 shadow-purple-100"
-                    }`}
+                    className={`p-3 md:p-5 shadow-lg border-0 rounded-2xl md:rounded-3xl ${message.type === "user"
+                      ? "bg-gradient-to-r from-purple-500 to-purple-600 text-white"
+                      : "bg-white text-gray-800 shadow-purple-100"
+                      }`}
                   >
                     <div className="flex items-start space-x-3">
                       <div className="flex-1">
@@ -606,9 +719,8 @@ export function MainConversation({
                             <Button
                               variant="ghost"
                               size="sm"
-                              className={`h-8 px-3 rounded-full ${
-                                message.isPlaying ? "bg-orange-100 text-orange-600" : "hover:bg-gray-100 text-gray-600"
-                              }`}
+                              className={`h-8 px-3 rounded-full ${message.isPlaying ? "bg-orange-100 text-orange-600" : "hover:bg-gray-100 text-gray-600"
+                                }`}
                             >
                               <Volume2 className="h-3 w-3 mr-1" />
                               {message.isPlaying ? "Playing" : "Listen"}
@@ -656,6 +768,8 @@ export function MainConversation({
           <ChatInput
             onSendText={handleSendText}
             onStartVoiceRecording={handleStartRecording}
+            onStopVoiceRecording={handleStopRecording}
+            onCancelVoiceRecording={handleCancelRecording}
             isRecording={isRecording}
             isProcessing={isProcessing}
           />
@@ -668,6 +782,7 @@ export function MainConversation({
         isOpen={isInCallMode}
         onClose={() => setIsInCallMode(false)}
         onCallEnd={handleCallEnd}
+        sessionId={sessionId || undefined}
       />
     </div>
   )

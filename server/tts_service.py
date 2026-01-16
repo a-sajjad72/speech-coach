@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional, Dict
@@ -33,7 +34,8 @@ class TTSService:
         logger.info("TTS model loaded model_id=%s", model_id)
         return tts
 
-    def synthesize(self, text: str, speaker: Optional[str] = None, model: Optional[str] = None) -> Path:
+    def _synthesize_sync(self, text: str, speaker: Optional[str] = None, model: Optional[str] = None) -> Path:
+        """Blocking internal method to run in executor."""
         model_info = self._find_model_info(model)
         tts = self._ensure_tts(model_info)
         file_path = self.output_dir / f"coach_tts_{uuid4().hex}.wav"
@@ -59,5 +61,9 @@ class TTSService:
         )
         tts.tts_to_file(**kwargs)
         return file_path
+
+    async def synthesize(self, text: str, speaker: Optional[str] = None, model: Optional[str] = None) -> Path:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._synthesize_sync, text, speaker, model)
 
 

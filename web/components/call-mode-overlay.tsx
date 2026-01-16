@@ -1,9 +1,12 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { MicOff, Mic, Phone, Volume2 } from "lucide-react"
 import { AudioVisualizer } from "@/components/audio-visualizer"
+import { useWebSocketCall } from "@/hooks/use-websocket-call"
+import { AudioRecorder, AudioPlaybackQueue } from "@/lib/audio-utils"
+import { apiClient } from "@/lib/api-client"
 
 interface CallModeOverlayProps {
   language: string
@@ -11,14 +14,31 @@ interface CallModeOverlayProps {
   isOpen: boolean
   onClose: () => void
   onCallEnd: () => void
+  sessionId?: string
 }
 
-export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd }: CallModeOverlayProps) {
+export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd, sessionId }: CallModeOverlayProps) {
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(70)
   const [callDuration, setCallDuration] = useState(0)
-  const [isAISpeaking, setIsAISpeaking] = useState(true)
+  const [aiStatus, setAiStatus] = useState<"idle" | "thinking" | "speaking">("idle")
+  const [currentTranscription, setCurrentTranscription] = useState("")
+  const [aiResponse, setAiResponse] = useState("")
+  const [statusMessage, setStatusMessage] = useState("Starting call...")
 
+  const { connectionState, connect, disconnect, sendAudio, lastMessage, error } = useWebSocketCall()
+  const audioRecorderRef = useRef<AudioRecorder | null>(null)
+  const playbackQueueRef = useRef<AudioPlaybackQueue | null>(null)
+
+  // Initialize playback queue
+  useEffect(() => {
+    playbackQueueRef.current = new AudioPlaybackQueue()
+    return () => {
+      playbackQueueRef.current?.stop()
+    }
+  }, [])
+
+  // Call duration timer
   useEffect(() => {
     if (!isOpen) return
 
@@ -29,16 +49,102 @@ export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd }:
     return () => clearInterval(interval)
   }, [isOpen])
 
+  // Initialize call when opened
   useEffect(() => {
-    // Simulate AI speaking/listening pattern
-    const speakInterval = setInterval(() => {
-      setIsAISpeaking((prev) => !prev)
-    }, 4000)
+    if (!isOpen) return
 
-    return () => clearInterval(speakInterval)
-  }, [isOpen])
+    const initializeCall = async () => {
+      try {
+        setStatusMessage("Connecting to coach...")
+
+        // Connect WebSocket
+        if (sessionId) {
+          await connect(sessionId)
+        } else {
+          console.error("No session ID provided")
+          setStatusMessage("Error: No session ID")
+          return
+        }
+
+        // Initialize audio recorder
+        audioRecorderRef.current = new AudioRecorder({
+          onAudioChunk: (blob) => {
+            sendAudio(blob)
+            setStatusMessage("Processing your speech...")
+          },
+          onError: (err) => {
+            console.error("Audio recording error:", err)
+            setStatusMessage("Microphone error")
+          },
+        })
+
+        await audioRecorderRef.current.start()
+        setStatusMessage("Ready! You can start speaking")
+        setAiStatus("idle")
+      } catch (err) {
+        console.error("Failed to initialize call:", err)
+        setStatusMessage("Failed to start call")
+      }
+    }
+
+    initializeCall()
+
+    return () => {
+      // Cleanup on close
+      audioRecorderRef.current?.stop()
+      audioRecorderRef.current = null
+      disconnect()
+      setCallDuration(0)
+      setCurrentTranscription("")
+      setAiResponse("")
+      setAiStatus("idle")
+    }
+  }, [isOpen, sessionId, connect, disconnect, sendAudio])
+
+  // Handle WebSocket messages
+  useEffect(() => {
+    if (!lastMessage) return
+
+    switch (lastMessage.type) {
+      case "transcription":
+        setCurrentTranscription(lastMessage.text)
+        setStatusMessage("You said: " + lastMessage.text.substring(0, 50))
+        break
+
+      case "status":
+        setAiStatus(lastMessage.status)
+        if (lastMessage.status === "thinking") {
+          setStatusMessage("AI is thinking...")
+        } else if (lastMessage.status === "speaking") {
+          setStatusMessage("AI is speaking...")
+        } else {
+          setStatusMessage("Your turn to speak")
+        }
+        break
+
+      case "text_response":
+        setAiResponse(lastMessage.text)
+        break
+
+      case "audio_url":
+        playbackQueueRef.current?.enqueue(lastMessage.url)
+        break
+
+      case "error":
+        console.error("WebSocket error:", lastMessage.message)
+        setStatusMessage("Error: " + lastMessage.message)
+        break
+    }
+  }, [lastMessage])
+
+  // Handle mute toggle
+  useEffect(() => {
+    audioRecorderRef.current?.setMuted(isMuted)
+  }, [isMuted])
 
   const handleEndCall = () => {
+    audioRecorderRef.current?.stop()
+    disconnect()
     onCallEnd()
     onClose()
   }
@@ -48,6 +154,8 @@ export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd }:
     const secs = seconds % 60
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
+
+  const isAISpeaking = aiStatus === "speaking"
 
   if (!isOpen) return null
 
@@ -90,9 +198,10 @@ export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd }:
           </div>
 
           {/* Status Message */}
-          <p className="text-sm text-purple-100">
-            {isAISpeaking ? "Listen to the AI tutor's response" : "Speak clearly and naturally (up to 30 seconds)"}
-          </p>
+          <p className="text-sm text-purple-100 mb-2">{statusMessage}</p>
+          {currentTranscription && (
+            <p className="text-xs text-white/80 italic">"{currentTranscription}"</p>
+          )}
         </div>
 
         {/* Control Buttons */}
@@ -100,11 +209,10 @@ export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd }:
           {/* Mute Button */}
           <Button
             onClick={() => setIsMuted(!isMuted)}
-            className={`rounded-full w-16 h-16 md:w-20 md:h-20 transition-all ${
-              isMuted
-                ? "bg-red-500 hover:bg-red-600 text-white"
-                : "bg-white/20 hover:bg-white/30 text-white border border-white/30"
-            }`}
+            className={`rounded-full w-16 h-16 md:w-20 md:h-20 transition-all ${isMuted
+              ? "bg-red-500 hover:bg-red-600 text-white"
+              : "bg-white/20 hover:bg-white/30 text-white border border-white/30"
+              }`}
           >
             {isMuted ? <MicOff className="w-8 h-8 md:w-10 md:h-10" /> : <Mic className="w-8 h-8 md:w-10 md:h-10" />}
           </Button>
@@ -133,9 +241,6 @@ export function CallModeOverlay({ language, topic, isOpen, onClose, onCallEnd }:
               value={volume}
               onChange={(e) => setVolume(Number(e.target.value))}
               className="w-20 md:w-24 h-1 bg-white/20 rounded-full accent-orange-400"
-              style={{
-                writing: "vertical-rl",
-              }}
             />
             <span className="text-xs text-white font-semibold">{volume}%</span>
           </div>

@@ -3,17 +3,17 @@ import logging
 from pathlib import Path
 from typing import List, Dict
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi import Request
 
-from .config import OUTPUT_DIR, LLM_CONFIG, TTS_MODELS, TTS_DEFAULT_MODEL
+from .config import OUTPUT_DIR, LLM_CONFIG, TTS_MODELS, TTS_DEFAULT_MODEL, STORAGE_CONFIG
 from .db import Database
 from .ollama_service import OllamaService
 from .stt_service import WhisperService
 from .tts_service import TTSService
+from .storage import get_storage_provider
+from .connection_manager import ConnectionManager
 from .schemas import (
     SessionCreateRequest,
     SessionCreateResponse,
@@ -44,14 +44,16 @@ db = Database()
 ollama_service = OllamaService()
 whisper_service = WhisperService()
 tts_service = TTSService()
+storage_provider = get_storage_provider(STORAGE_CONFIG, OUTPUT_DIR)
+connection_manager = ConnectionManager(db, whisper_service, ollama_service, tts_service, storage_provider)
 
 BASE_DIR = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# Mount output directory for serving generated audio files
 app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
 
 logger.info(f"TTS_DEFAULT_MODEL: {TTS_DEFAULT_MODEL}")
+logger.info(f"Storage Provider: {type(storage_provider).__name__}")
 
 def build_chat_history(session_id: str) -> List[Dict[str, str]]:
     """Convert stored messages to Ollama chat format."""
@@ -63,10 +65,6 @@ def build_chat_history(session_id: str) -> List[Dict[str, str]]:
         chat_messages.append({"role": role, "content": content})
     return chat_messages
 
-
-@app.get("/")
-def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.post("/api/session", response_model=SessionCreateResponse)
@@ -81,7 +79,7 @@ def create_session(payload: SessionCreateRequest):
 
 
 @app.post("/api/process_audio", response_model=ProcessAudioResponse)
-def process_audio(
+async def process_audio(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
     model: str | None = Form(None),
@@ -101,34 +99,57 @@ def process_audio(
     if not db.session_exists(session_id):
         db.add_session(session_id, mode="call")
 
-    # Transcribe user audio
-    user_text = whisper_service.transcribe_upload(audio)
-    logger.info("Transcription done len=%s", len(user_text))
-    db.add_message(session_id=session_id, sender="user", text=user_text)
+    try:
+        # Transcribe user audio
+        user_text = await whisper_service.transcribe_upload(audio)
+        logger.info("Transcription done len=%s", len(user_text))
+        db.add_message(session_id=session_id, sender="user", text=user_text)
 
-    # Build context and query LLM
-    history = build_chat_history(session_id)
-    history.append({"role": "user", "content": user_text})
-    coach_reply = ollama_service.chat(history, model=model)
-    logger.info("LLM reply len=%s", len(coach_reply))
+        logger.info("User text: %s", user_text)
 
-    # Synthesize coach reply
-    tts_path = tts_service.synthesize(coach_reply, speaker=speaker, model=tts_model)
-    logger.info("TTS synthesized path=%s", tts_path)
-    audio_url = f"/output/{tts_path.name}"
+        # Build context and query LLM
+        history = build_chat_history(session_id)
+        history.append({"role": "user", "content": user_text})
+        
+        try:
+            coach_reply = await ollama_service.chat(history, model=model)
+            logger.info("LLM reply len=%s", len(coach_reply))
+        except Exception as e:
+            logger.error("LLM failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
 
-    db.add_message(session_id=session_id, sender="coach", text=coach_reply, audio_path=str(tts_path))
+        # Synthesize coach reply
+        try:
+            tts_path = await tts_service.synthesize(coach_reply, speaker=speaker, model=tts_model)
+            logger.info("TTS synthesized path=%s", tts_path)
+            
+            # Use StorageProvider to handle the file (Local or S3)
+            with open(tts_path, "rb") as f:
+                audio_bytes = f.read()
+            audio_url = storage_provider.save_file(audio_bytes, tts_path.name)
+            
+        except Exception as e:
+            logger.error("TTS failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
-    return ProcessAudioResponse(
-        session_id=session_id,
-        user_transcript=user_text,
-        coach_reply=coach_reply,
-        coach_audio_url=audio_url,
-    )
+        db.add_message(session_id=session_id, sender="coach", text=coach_reply, audio_path=audio_url)
+
+        return ProcessAudioResponse(
+            session_id=session_id,
+            user_transcript=user_text,
+            coach_reply=coach_reply,
+            coach_audio_url=audio_url,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error in process_audio")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/send_text", response_model=ProcessAudioResponse)
-def send_text(payload: TextMessageRequest):
+async def send_text(payload: TextMessageRequest):
     logger.info(
         "send_text start session_id=%s model=%s speaker=%s tts_model=%s",
         payload.session_id,
@@ -140,22 +161,33 @@ def send_text(payload: TextMessageRequest):
         db.add_session(payload.session_id, mode="chat")
 
     db.add_message(session_id=payload.session_id, sender="user", text=payload.text)
-    history = build_chat_history(payload.session_id)
-    history.append({"role": "user", "content": payload.text})
-    coach_reply = ollama_service.chat(history, model=payload.model)
-    logger.info("LLM reply len=%s", len(coach_reply))
-    tts_path = tts_service.synthesize(coach_reply, speaker=payload.speaker, model=payload.tts_model)
-    logger.info("TTS synthesized path=%s", tts_path)
-    audio_url = f"/output/{tts_path.name}"
+    
+    try:
+        history = build_chat_history(payload.session_id)
+        history.append({"role": "user", "content": payload.text})
+        
+        coach_reply = await ollama_service.chat(history, model=payload.model)
+        logger.info("LLM reply len=%s", len(coach_reply))
+        
+        tts_path = await tts_service.synthesize(coach_reply, speaker=payload.speaker, model=payload.tts_model)
+        logger.info("TTS synthesized path=%s", tts_path)
+        
+        # Use StorageProvider
+        with open(tts_path, "rb") as f:
+            audio_bytes = f.read()
+        audio_url = storage_provider.save_file(audio_bytes, tts_path.name)
 
-    db.add_message(session_id=payload.session_id, sender="coach", text=coach_reply, audio_path=str(tts_path))
+        db.add_message(session_id=payload.session_id, sender="coach", text=coach_reply, audio_path=audio_url)
 
-    return ProcessAudioResponse(
-        session_id=payload.session_id,
-        user_transcript=payload.text,
-        coach_reply=coach_reply,
-        coach_audio_url=audio_url,
-    )
+        return ProcessAudioResponse(
+            session_id=payload.session_id,
+            user_transcript=payload.text,
+            coach_reply=coach_reply,
+            coach_audio_url=audio_url,
+        )
+    except Exception as e:
+        logger.exception("Error in send_text")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/chat/history", response_model=ChatHistoryResponse)
@@ -199,5 +231,42 @@ def models_info():
         "default_tts_model": TTS_DEFAULT_MODEL.get("model"),
         "speakers": TTS_DEFAULT_MODEL.get("available_speaker_ids", []),
     }
+
+
+@app.websocket("/api/ws/call/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    await connection_manager.connect(websocket, session_id)
+    try:
+        if not db.session_exists(session_id):
+            db.add_session(session_id, mode="call")
+            
+        while True:
+            # Expecting bytes for audio or json for control/metadata
+            # For simplicity, assuming the client sends raw audio bytes
+            # Ideally client should send a JSON first with metadata, or we use a custom protocol.
+            # But the requirement is "user speaks", so likely streaming audio chunks.
+            # For this MVP, let's assume the client sends one blob per turn (Turn-based as in plan).
+            
+            data = await websocket.receive_bytes()
+            # We assume it's audio data
+            # Tricky part: how to know model params? 
+            # We can default them or expect client to have set them in a previous message or query params.
+            # Let's fallback to defaults for now or parse if text frame. 
+            # Note: receive_bytes will fail if text is sent. 
+            
+            # Better approach: `receive()` and check type.
+            # But for "call" feature, audio bytes is most efficient. 
+            
+            await connection_manager.process_audio_stream(session_id, data)
+            
+    except WebSocketDisconnect:
+        connection_manager.disconnect(session_id)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.close()
+        except:
+            pass
+        connection_manager.disconnect(session_id)
 
 
