@@ -20,7 +20,10 @@ class Database:
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 mode TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                topic TEXT,
+                language TEXT,
+                model TEXT
             )
             """
         )
@@ -39,11 +42,11 @@ class Database:
         )
         self.conn.commit()
 
-    def add_session(self, session_id: str, mode: str):
+    def add_session(self, session_id: str, mode: str, topic: str = None, language: str = None, model: str = None):
         cur = self.conn.cursor()
         cur.execute(
-            "INSERT INTO sessions (id, mode, created_at) VALUES (?, ?, ?)",
-            (session_id, mode, datetime.utcnow().isoformat()),
+            "INSERT INTO sessions (id, mode, created_at, topic, language, model) VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, mode, datetime.utcnow().isoformat(), topic, language, model),
         )
         self.conn.commit()
 
@@ -68,4 +71,57 @@ class Database:
         row = cur.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone()
         return row is not None
 
+    def get_all_sessions(self) -> List[Dict[str, Any]]:
+        """Get all sessions with message count and duration stats."""
+        cur = self.conn.cursor()
+        rows = cur.execute(
+            """
+            SELECT 
+                s.id,
+                s.mode,
+                s.created_at,
+                s.topic,
+                s.language,
+                s.model,
+                COUNT(m.id) as message_count,
+                MIN(m.created_at) as first_message,
+                MAX(m.created_at) as last_message
+            FROM sessions s
+            LEFT JOIN messages m ON s.id = m.session_id
+            GROUP BY s.id
+            ORDER BY s.created_at DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_session_metadata(self, session_id: str, topic: str = None, language: str = None, model: str = None):
+        """Update session metadata (topic, language, model)."""
+        cur = self.conn.cursor()
+        updates = []
+        params = []
+        
+        if topic is not None:
+            updates.append("topic = ?")
+            params.append(topic)
+        if language is not None:
+            updates.append("language = ?")
+            params.append(language)
+        if model is not None:
+            updates.append("model = ?")
+            params.append(model)
+        
+        if updates:
+            params.append(session_id)
+            query = f"UPDATE sessions SET {', '.join(updates)} WHERE id = ?"
+            cur.execute(query, params)
+            self.conn.commit()
+
+    def delete_session(self, session_id: str):
+        """Delete a session and all its messages."""
+        cur = self.conn.cursor()
+        # Delete messages first (foreign key constraint)
+        cur.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+        # Delete session
+        cur.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+        self.conn.commit()
 

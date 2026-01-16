@@ -32,6 +32,7 @@ interface MainConversationProps {
   onLanguageChange: (language: string) => void
   onTopicChange: (topic: string) => void
   onModelChange: (model: string) => void
+  initialSessionId?: string | null
 }
 
 export function MainConversation({
@@ -42,6 +43,7 @@ export function MainConversation({
   onLanguageChange,
   onTopicChange,
   onModelChange,
+  initialSessionId,
 }: MainConversationProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isRecording, setIsRecording] = useState(false)
@@ -100,19 +102,68 @@ export function MainConversation({
     scrollToBottom()
   }, [messages])
 
-  // Initialize session on mount
-  useEffect(() => {
-    const initSession = async () => {
-      try {
-        const response = await apiClient.createSession("chat")
-        setSessionId(response.session_id)
-        console.log("Session created:", response.session_id)
-      } catch (error) {
-        console.error("Failed to create session:", error)
-      }
+  // Create session on demand (when first message is sent)
+  const ensureSession = async (): Promise<string> => {
+    if (sessionId) {
+      return sessionId
     }
-    initSession()
-  }, [])
+
+    try {
+      const response = await apiClient.createSession("chat", {
+        topic: topic === "Custom" ? customTopic : topic,
+        language: language,
+        model: model,
+      })
+      setSessionId(response.session_id)
+      console.log("Session created with metadata:", response.session_id, topic, language)
+      return response.session_id
+    } catch (error) {
+      console.error("Failed to create session:", error)
+      throw error
+    }
+  }
+
+  const resumeSession = async (sessionToResume: string) => {
+    try {
+      // Load chat history
+      const history = await apiClient.getChatHistory(sessionToResume)
+
+      // Get session metadata
+      const allSessions = await apiClient.getAllSessions()
+      const sessionData = allSessions.sessions.find(s => s.session_id === sessionToResume)
+
+      if (sessionData) {
+        // Restore metadata
+        if (sessionData.topic) onTopicChange(sessionData.topic)
+        if (sessionData.language) onLanguageChange(sessionData.language)
+        if (sessionData.model) onModelChange(sessionData.model)
+      }
+
+      // Load messages
+      const formattedMessages: Message[] = history.messages.map((msg, idx) => ({
+        id: String(idx),
+        type: msg.sender === "user" ? "user" : "ai",
+        text: msg.text,
+        timestamp: new Date(msg.timestamp || msg.created_at || Date.now()),
+        audioUrl: msg.audio_path || undefined,
+      }))
+
+      setSessionId(sessionToResume)
+      setMessages(formattedMessages)
+      console.log("Resumed session:", sessionToResume)
+
+    } catch (error) {
+      console.error("Failed to resume session:", error)
+    }
+  }
+
+  // Resume session on mount if initialSessionId is provided
+  useEffect(() => {
+    if (initialSessionId) {
+      console.log("Component mounted with initialSessionId:", initialSessionId)
+      resumeSession(initialSessionId)
+    }
+  }, [initialSessionId])
 
   const handleCallEnd = async () => {
     // Reload chat history after call ends
@@ -134,10 +185,7 @@ export function MainConversation({
   }
 
   const handleSendText = async (text: string) => {
-    if (!sessionId) {
-      console.error("No session ID")
-      return
-    }
+    const currentSessionId = await ensureSession()
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -149,7 +197,7 @@ export function MainConversation({
     setIsProcessing(true)
 
     try {
-      const response = await apiClient.sendTextMessage(sessionId, text, {
+      const response = await apiClient.sendTextMessage(currentSessionId, text, {
         model: null,
         speaker: null,
         ttsModel: null,
@@ -190,6 +238,8 @@ export function MainConversation({
   }
 
   const handleStartRecording = async () => {
+    const currentSessionId = await ensureSession()
+
     if (!sessionId) {
       console.error("No session ID")
       return
@@ -221,7 +271,7 @@ export function MainConversation({
         setIsProcessing(true)
 
         try {
-          const response = await apiClient.processAudio(sessionId, audioBlob, {
+          const response = await apiClient.processAudio(currentSessionId, audioBlob, {
             model: null,
             speaker: null,
             ttsModel: null,

@@ -1,5 +1,6 @@
 ### Project Specific Files/Directories ###
 output/
+server/data
 
 # Created by https://www.toptal.com/developers/gitignore/api/flask,dotenv,python,pycharm,visualstudiocode,venv,virtualenv
 # Edit at https://www.toptal.com/developers/gitignore?templates=flask,dotenv,python,pycharm,visualstudiocode,venv,virtualenv

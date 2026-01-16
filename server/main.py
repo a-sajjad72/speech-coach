@@ -21,6 +21,7 @@ from .schemas import (
     TextMessageRequest,
     ChatHistoryResponse,
     Message,
+    UpdateMetadataRequest,
 )
 
 app = FastAPI(title="Speech Coach")
@@ -69,11 +70,11 @@ def build_chat_history(session_id: str) -> List[Dict[str, str]]:
 
 @app.post("/api/session", response_model=SessionCreateResponse)
 def create_session(payload: SessionCreateRequest):
-    logger.info("Creating session mode=%s", payload.mode)
+    logger.info("Creating session mode=%s topic=%s language=%s", payload.mode, payload.topic, payload.language)
     if payload.mode not in {"call", "chat"}:
         raise HTTPException(status_code=400, detail="mode must be 'call' or 'chat'")
     session_id = str(uuid.uuid4())
-    db.add_session(session_id, payload.mode)
+    db.add_session(session_id, payload.mode, payload.topic, payload.language, payload.model)
     logger.info("Session created id=%s mode=%s", session_id, payload.mode)
     return SessionCreateResponse(session_id=session_id)
 
@@ -197,6 +198,78 @@ def chat_history(session_id: str):
         raise HTTPException(status_code=404, detail="Unknown session")
     messages = [Message(**m) for m in db.get_messages(session_id)]
     return ChatHistoryResponse(session_id=session_id, messages=messages)
+
+
+@app.get("/api/sessions/all")
+def get_all_sessions():
+    """Get all sessions with statistics."""
+    logger.info("get_all_sessions called")
+    sessions = db.get_all_sessions()
+    
+    # Calculate duration for each session
+    result = []
+    for session in sessions:
+        session_data = {
+            "session_id": session["id"],
+            "mode": session["mode"],
+            "created_at": session["created_at"],
+            "message_count": session["message_count"],
+        }
+        
+        # Calculate duration in seconds if messages exist
+        if session["first_message"] and session["last_message"]:
+            from datetime import datetime
+            first = datetime.fromisoformat(session["first_message"])
+            last = datetime.fromisoformat(session["last_message"])
+            duration = (last - first).total_seconds()
+            session_data["duration_seconds"] = int(duration)
+            session_data["first_message"] = session["first_message"]
+            session_data["last_message"] = session["last_message"]
+        else:
+            session_data["duration_seconds"] = 0
+            session_data["first_message"] = None
+            session_data["last_message"] = None
+        
+        result.append(session_data)
+    
+    return {"sessions": result}
+
+
+@app.delete("/api/sessions/clear-all")
+def clear_all_sessions():
+    """Delete all sessions and messages."""
+    logger.info("clear_all_sessions called")
+    sessions = db.get_all_sessions()
+    count = len(sessions)
+    
+    for session in sessions:
+        db.delete_session(session["id"])
+    
+    logger.info(f"Cleared {count} sessions")
+    return {"success": True, "message": f"{count} sessions deleted", "count": count}
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str):
+    """Delete a session and all its messages."""
+    logger.info("delete_session session_id=%s", session_id)
+    if not db.session_exists(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    db.delete_session(session_id)
+    logger.info("Session deleted session_id=%s", session_id)
+    return {"success": True, "message": "Session deleted successfully"}
+
+
+@app.patch("/api/sessions/{session_id}/metadata")
+def update_session_metadata(session_id: str, payload: UpdateMetadataRequest):
+    """Update session metadata (topic, language, model)."""
+    logger.info("update_session_metadata session_id=%s", session_id)
+    if not db.session_exists(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    db.update_session_metadata(session_id, payload.topic, payload.language, payload.model)
+    return {"success": True}
 
 
 @app.get("/api/models")

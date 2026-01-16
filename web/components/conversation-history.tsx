@@ -1,107 +1,129 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { ArrowLeft, Download, Trash2, Calendar, Clock, Globe, Search, Filter, MoreHorizontal } from "lucide-react"
+import { ArrowLeft, Download, Trash2, Calendar, Clock, Globe, Search, Filter, MoreHorizontal, Loader2 } from "lucide-react"
+import { apiClient } from "@/lib/api-client"
+import type { SessionInfo, Message } from "@/lib/types"
+import { CardSessionMenu } from "./card-session-menu"
+import { FilterMenu } from "./filter-menu"
 
 interface ConversationSession {
   id: string
   date: Date
-  language: string
-  topic: string
+  mode: string
   duration: string
   messageCount: number
-  messages: Array<{
+  topic: string
+  language: string
+  model?: string | null
+  messages?: Array<{
     type: "user" | "ai"
     text: string
     timestamp: Date
+    audio_path?: string
   }>
 }
 
 interface ConversationHistoryProps {
   onNavigate: (view: "conversation" | "settings" | "history") => void
+  onResumeSession?: (sessionId: string) => void
 }
 
-export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
-  const [sessions] = useState<ConversationSession[]>([
-    {
-      id: "1",
-      date: new Date("2024-01-15T14:30:00"),
-      language: "Spanish",
-      topic: "Travel Planning",
-      duration: "12 min",
-      messageCount: 18,
-      messages: [
-        {
-          type: "ai",
-          text: "¡Hola! I'm your Spanish conversation coach. Let's practice talking about travel planning.",
-          timestamp: new Date("2024-01-15T14:30:00"),
-        },
-        {
-          type: "user",
-          text: "Me gustaría visitar Barcelona el próximo verano.",
-          timestamp: new Date("2024-01-15T14:30:30"),
-        },
-        {
-          type: "ai",
-          text: "¡Excelente elección! Barcelona es una ciudad maravillosa. ¿Qué lugares te interesan más?",
-          timestamp: new Date("2024-01-15T14:30:45"),
-        },
-      ],
-    },
-    {
-      id: "2",
-      date: new Date("2024-01-14T16:15:00"),
-      language: "French",
-      topic: "Restaurant Ordering",
-      duration: "8 min",
-      messageCount: 12,
-      messages: [
-        {
-          type: "ai",
-          text: "Bonjour! Today we'll practice ordering at a French restaurant.",
-          timestamp: new Date("2024-01-14T16:15:00"),
-        },
-        {
-          type: "user",
-          text: "Bonjour, je voudrais une table pour deux personnes, s'il vous plaît.",
-          timestamp: new Date("2024-01-14T16:15:20"),
-        },
-      ],
-    },
-    {
-      id: "3",
-      date: new Date("2024-01-13T10:45:00"),
-      language: "Spanish",
-      topic: "Job Interview",
-      duration: "15 min",
-      messageCount: 24,
-      messages: [
-        {
-          type: "ai",
-          text: "Vamos a practicar una entrevista de trabajo en español.",
-          timestamp: new Date("2024-01-13T10:45:00"),
-        },
-      ],
-    },
-  ])
-
+export function ConversationHistory({ onNavigate, onResumeSession }: ConversationHistoryProps) {
+  const [sessions, setSessions] = useState<ConversationSession[]>([])
   const [selectedSession, setSelectedSession] = useState<ConversationSession | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
+  const [loading, setLoading] = useState(true)
+  const [loadingMessages, setLoadingMessages] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [selectedLanguages, setSelectedLanguages] = useState<string[]>([])
+  const availableLanguages = Array.from(new Set(sessions.map((s) => s.language)))
+
+  // Format duration from seconds to readable string
+  const formatDuration = (seconds: number): string => {
+    if (seconds === 0) return "0 sec"
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    if (mins === 0) return `${secs} sec`
+    if (secs === 0) return `${mins} min`
+    return `${mins} min`
+  }
+
+  // Transform backend SessionInfo to component ConversationSession
+  const transformSession = (session: SessionInfo): ConversationSession => {
+    return {
+      id: session.session_id,
+      date: new Date(session.created_at),
+      mode: session.mode,
+      duration: formatDuration(session.duration_seconds),
+      messageCount: session.message_count,
+      topic: session.topic || "",
+      language: session.language || "",
+      model: session.model,
+    }
+  }
+
+  // Fetch all sessions on mount
+  useEffect(() => {
+    const fetchSessions = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await apiClient.getAllSessions()
+        const transformedSessions = response.sessions.map(transformSession)
+        setSessions(transformedSessions)
+      } catch (err) {
+        console.error("Failed to fetch sessions:", err)
+        setError("Failed to load conversation history")
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchSessions()
+  }, [])
+
+  // Load messages when session is selected
+  const handleSessionClick = async (session: ConversationSession) => {
+    if (session.messages) {
+      // Messages already loaded
+      setSelectedSession(session)
+      return
+    }
+
+    setLoadingMessages(true)
+    try {
+      const history = await apiClient.getChatHistory(session.id)
+      const messages = history.messages.map((msg: Message) => ({
+        type: msg.sender === "user" ? "user" as const : "ai" as const,
+        text: msg.text || "",
+        timestamp: new Date(msg.timestamp || new Date().toISOString()),
+        audio_path: msg.audio_path || undefined,
+      }))
+
+      const sessionWithMessages = { ...session, messages }
+      setSessions(prev => prev.map(s => s.id === session.id ? sessionWithMessages : s))
+      setSelectedSession(sessionWithMessages)
+    } catch (err) {
+      console.error("Failed to load messages:", err)
+      setError("Failed to load session messages")
+    } finally {
+      setLoadingMessages(false)
+    }
+  }
 
   const handleExportSession = (session: ConversationSession) => {
     const exportData = {
       session: {
         date: session.date.toISOString(),
-        language: session.language,
-        topic: session.topic,
+        mode: session.mode,
         duration: session.duration,
       },
-      messages: session.messages,
+      messages: session.messages || [],
     }
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" })
@@ -115,15 +137,52 @@ export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
     URL.revokeObjectURL(url)
   }
 
-  const handleDeleteSession = (sessionId: string) => {
-    console.log("Delete session:", sessionId)
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!confirm("Are you sure you want to delete this conversation? This action cannot be undone.")) {
+      return
+    }
+
+    try {
+      await apiClient.deleteSession(sessionId)
+      setSessions(prev => prev.filter(s => s.id !== sessionId))
+      if (selectedSession?.id === sessionId) {
+        setSelectedSession(null)
+      }
+    } catch (err) {
+      console.error("Failed to delete session:", err)
+      alert("Failed to delete session. Please try again.")
+    }
   }
 
-  const filteredSessions = sessions.filter(
-    (session) =>
+  const handleClearAll = async () => {
+    if (!confirm(`Are you sure you want to delete ALL ${sessions.length} conversation(s)? This action cannot be undone.`)) {
+      return
+    }
+
+    try {
+      const result = await apiClient.clearAllSessions()
+      setSessions([])
+      setSelectedSession(null)
+      alert(`Successfully deleted ${result.count} session(s)`)
+    } catch (err) {
+      console.error("Failed to clear all sessions:", err)
+      alert("Failed to clear sessions. Please try again.")
+    }
+  }
+
+  const handleLanguageFilter = (language: string) => {
+    setSelectedLanguages((prev) => (prev.includes(language) ? prev.filter((l) => l !== language) : [...prev, language]))
+  }
+
+  const filteredSessions = sessions.filter((session) => {
+    const matchesSearch =
       session.topic.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      session.language.toLowerCase().includes(searchQuery.toLowerCase()),
-  )
+      session.language.toLowerCase().includes(searchQuery.toLowerCase())
+
+    const matchesLanguageFilter = selectedLanguages.length === 0 || selectedLanguages.includes(session.language)
+
+    return matchesSearch && matchesLanguageFilter
+  })
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-purple-50 via-white to-orange-50">
@@ -156,13 +215,21 @@ export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
               <Badge className="bg-gradient-to-r from-purple-500 to-pink-500 text-white border-0 px-2 lg:px-4 py-1 lg:py-2 rounded-full text-xs lg:text-sm">
                 {sessions.length} Sessions
               </Badge>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-full w-8 h-8 lg:w-10 lg:h-10"
-              >
-                <Filter className="h-4 w-4 lg:h-5 lg:w-5" />
-              </Button>
+              {sessions.length > 0 && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleClearAll}
+                  className="text-xs lg:text-sm"
+                >
+                  Clear All
+                </Button>
+              )}
+              <FilterMenu
+                selectedLanguages={selectedLanguages}
+                onLanguageChange={handleLanguageFilter}
+                availableLanguages={availableLanguages}
+              />
             </div>
           </div>
 
@@ -201,7 +268,7 @@ export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-y-auto">
           {selectedSession ? (
             /* Detailed Session View */
             <div className="flex flex-col h-full">
@@ -218,7 +285,7 @@ export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
                       ← Back to History
                     </Button>
                     <div>
-                      <h2 className="text-lg lg:text-xl font-bold text-gray-800">{selectedSession.topic}</h2>
+                      <h2 className="text-lg lg:text-xl font-bold text-gray-800">Practice Session</h2>
                       <div className="flex flex-wrap items-center gap-2 lg:gap-4 text-xs lg:text-sm text-gray-600 mt-1">
                         <span className="flex items-center bg-blue-100 text-blue-600 px-2 py-1 rounded-full">
                           <Calendar className="h-3 w-3 mr-1" />
@@ -230,7 +297,7 @@ export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
                         </span>
                         <Badge className="bg-gradient-to-r from-purple-500 to-pink-500 text-white border-0 rounded-full">
                           <Globe className="h-3 w-3 mr-1" />
-                          {selectedSession.language}
+                          {selectedSession.mode === "call" ? "Call Mode" : "Chat Mode"}
                         </Badge>
                       </div>
                     </div>
@@ -256,150 +323,182 @@ export function ConversationHistory({ onNavigate }: ConversationHistoryProps) {
 
               {/* Messages */}
               <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-                <div className="max-w-4xl mx-auto space-y-4 lg:space-y-6">
-                  {selectedSession.messages.map((message, index) => (
-                    <div key={index} className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}>
-                      <div
-                        className={`max-w-[85%] lg:max-w-[70%] ${message.type === "user" ? "ml-4 lg:ml-20" : "mr-4 lg:mr-20"}`}
-                      >
-                        <Card
-                          className={`p-3 lg:p-5 shadow-lg border-0 rounded-2xl lg:rounded-3xl ${
-                            message.type === "user"
+                {loadingMessages ? (
+                  <div className="flex items-center justify-center h-full">
+                    <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+                    <span className="ml-3 text-gray-600">Loading messages...</span>
+                  </div>
+                ) : (
+                  <div className="max-w-4xl mx-auto space-y-4 lg:space-y-6">
+                    {selectedSession.messages?.map((message, index) => (
+                      <div key={index} className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}>
+                        <div
+                          className={`max-w-[85%] lg:max-w-[70%] ${message.type === "user" ? "ml-4 lg:ml-20" : "mr-4 lg:mr-20"}`}
+                        >
+                          <Card
+                            className={`p-3 lg:p-5 shadow-lg border-0 rounded-2xl lg:rounded-3xl ${message.type === "user"
                               ? "bg-gradient-to-r from-purple-500 to-purple-600 text-white"
                               : "bg-white/80 backdrop-blur-sm text-gray-800"
-                          }`}
-                        >
-                          <p className="leading-relaxed text-sm lg:text-base mb-2 lg:mb-3">{message.text}</p>
-                          <p
-                            className={`text-xs ${
-                              message.type === "user" ? "text-purple-100" : "text-gray-500"
-                            } font-medium`}
+                              }`}
                           >
-                            {message.timestamp.toLocaleTimeString()}
-                          </p>
-                        </Card>
+                            <p className="leading-relaxed text-sm lg:text-base mb-2 lg:mb-3">{message.text}</p>
+                            <p
+                              className={`text-xs ${message.type === "user" ? "text-purple-100" : "text-gray-500"
+                                } font-medium`}
+                            >
+                              {message.timestamp.toLocaleTimeString()}
+                            </p>
+                          </Card>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ) : (
             /* Sessions Overview */
             <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-              <div className="max-w-7xl mx-auto">
-                {viewMode === "grid" ? (
-                  /* Grid View */
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-6">
-                    {filteredSessions.map((session) => (
-                      <Card
-                        key={session.id}
-                        className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-105 border-0 rounded-2xl bg-white/60 backdrop-blur-sm"
-                        onClick={() => setSelectedSession(session)}
-                      >
-                        <CardContent className="p-4 lg:p-6">
-                          <div className="space-y-3 lg:space-y-4">
-                            <div className="flex items-center justify-between">
-                              <Badge className="bg-gradient-to-r from-teal-500 to-cyan-500 text-white border-0 rounded-full text-xs">
-                                <Globe className="h-3 w-3 mr-1" />
-                                {session.language}
-                              </Badge>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 lg:h-8 lg:w-8 text-gray-400 hover:text-gray-600"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                }}
-                              >
-                                <MoreHorizontal className="h-3 w-3 lg:h-4 lg:w-4" />
-                              </Button>
-                            </div>
-
-                            <div>
-                              <h3 className="font-semibold text-gray-800 mb-2 text-sm lg:text-base line-clamp-2">
-                                {session.topic}
-                              </h3>
-                              <p className="text-xs lg:text-sm text-gray-500">{session.date.toLocaleDateString()}</p>
-                            </div>
-
-                            <div className="flex items-center justify-between text-xs">
-                              <span className="flex items-center bg-orange-100 text-orange-600 px-2 py-1 rounded-full">
-                                <Clock className="h-3 w-3 mr-1" />
-                                {session.duration}
-                              </span>
-                              <span className="bg-purple-100 text-purple-600 px-2 py-1 rounded-full">
-                                {session.messageCount} msgs
-                              </span>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                ) : (
-                  /* List View */
-                  <div className="space-y-3 lg:space-y-4">
-                    {filteredSessions.map((session) => (
-                      <Card
-                        key={session.id}
-                        className="cursor-pointer transition-all duration-300 hover:shadow-lg border-0 rounded-2xl bg-white/60 backdrop-blur-sm"
-                        onClick={() => setSelectedSession(session)}
-                      >
-                        <CardContent className="p-4 lg:p-6">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center space-x-3 lg:space-x-4 flex-1 min-w-0">
-                              <div className="w-10 h-10 lg:w-12 lg:h-12 bg-gradient-to-r from-purple-100 to-orange-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                                <Calendar className="h-5 w-5 lg:h-6 lg:w-6 text-purple-600" />
+              {loading ? (
+                <div className="flex items-center justify-center h-64">
+                  <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+                  <span className="ml-3 text-gray-600">Loading sessions...</span>
+                </div>
+              ) : error ? (
+                <div className="text-center py-12">
+                  <div className="text-red-500 mb-4">{error}</div>
+                  <Button onClick={() => window.location.reload()}>Retry</Button>
+                </div>
+              ) : (
+                <div className="max-w-7xl mx-auto">
+                  {viewMode === "grid" ? (
+                    /* Grid View */
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-6">
+                      {filteredSessions.map((session) => (
+                        <Card
+                          key={session.id}
+                          className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-105 border-0 rounded-2xl bg-white/60 backdrop-blur-sm"
+                          onClick={() => handleSessionClick(session)}
+                        >
+                          <CardContent className="p-4 lg:p-6">
+                            <div className="space-y-3 lg:space-y-4">
+                              <div className="flex items-center justify-between">
+                                <Badge className="bg-gradient-to-r from-teal-500 to-cyan-500 text-white border-0 rounded-full text-xs">
+                                  <Globe className="h-3 w-3 mr-1" />
+                                  {session.mode === "call" ? "Call" : "Chat"}
+                                </Badge>
+                                <CardSessionMenu
+                                  onExport={() => handleExportSession(session)}
+                                  onDelete={() => handleDeleteSession(session.id)}
+                                />
                               </div>
-                              <div className="min-w-0 flex-1">
-                                <h3 className="font-semibold text-gray-800 text-sm lg:text-base truncate">
-                                  {session.topic}
+
+                              <div>
+                                <h3 className="font-semibold text-gray-800 mb-2 text-sm lg:text-base line-clamp-2">
+                                  {session.topic || "Practice Session"}
                                 </h3>
-                                <div className="flex flex-wrap items-center gap-2 lg:gap-4 text-xs lg:text-sm text-gray-500 mt-1">
-                                  <span>{session.date.toLocaleDateString()}</span>
-                                  <Badge className="bg-gradient-to-r from-teal-500 to-cyan-500 text-white border-0 rounded-full text-xs">
-                                    {session.language}
-                                  </Badge>
+                                <p className="text-xs lg:text-sm text-gray-500">{session.date.toLocaleDateString()}</p>
+                              </div>
+
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="flex items-center bg-orange-100 text-orange-600 px-2 py-1 rounded-full">
+                                  <Clock className="h-3 w-3 mr-1" />
+                                  {session.duration}
+                                </span>
+                                <span className="bg-purple-100 text-purple-600 px-2 py-1 rounded-full">
+                                  {session.messageCount} msgs
+                                </span>
+                              </div>
+
+                              {onResumeSession && (
+                                <Button
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    onResumeSession(session.id)
+                                    onNavigate("conversation")
+                                  }}
+                                  className="w-full mt-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+                                >
+                                  Resume Chat
+                                </Button>
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  ) : (
+                    /* List View */
+                    <div className="space-y-3 lg:space-y-4">
+                      {filteredSessions.map((session) => (
+                        <Card
+                          key={session.id}
+                          className="cursor-pointer transition-all duration-300 hover:shadow-lg border-0 rounded-2xl bg-white/60 backdrop-blur-sm"
+                          onClick={() => handleSessionClick(session)}
+                        >
+                          <CardContent className="p-4 lg:p-6">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center space-x-3 lg:space-x-4 flex-1 min-w-0">
+                                <div className="w-10 h-10 lg:w-12 lg:h-12 bg-gradient-to-r from-purple-100 to-orange-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                                  <Calendar className="h-5 w-5 lg:h-6 lg:w-6 text-purple-600" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <h3 className="font-semibold text-gray-800 text-sm lg:text-base truncate">
+                                    Practice Session
+                                  </h3>
+                                  <div className="flex flex-wrap items-center gap-2 lg:gap-4 text-xs lg:text-sm text-gray-500 mt-1">
+                                    <span>{session.date.toLocaleDateString()}</span>
+                                    <Badge className="bg-gradient-to-r from-teal-500 to-cyan-500 text-white border-0 rounded-full text-xs">
+                                      {session.mode === "call" ? "Call" : "Chat"}
+                                    </Badge>
+                                  </div>
                                 </div>
                               </div>
+                              <div className="flex items-center space-x-3 lg:space-x-6 text-xs lg:text-sm text-gray-600 flex-shrink-0">
+                                <span className="hidden sm:flex items-center">
+                                  <Clock className="h-3 w-3 lg:h-4 lg:w-4 mr-1" />
+                                  {session.duration}
+                                </span>
+                                <span className="hidden md:inline">{session.messageCount} messages</span>
+                                {onResumeSession && (
+                                  <Button
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      onResumeSession(session.id)
+                                      onNavigate("conversation")
+                                    }}
+                                    className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white text-xs"
+                                  >
+                                    Resume
+                                  </Button>
+                                )}
+                                <CardSessionMenu
+                                  onExport={() => handleExportSession(session)}
+                                  onDelete={() => handleDeleteSession(session.id)}
+                                />
+                              </div>
                             </div>
-                            <div className="flex items-center space-x-3 lg:space-x-6 text-xs lg:text-sm text-gray-600 flex-shrink-0">
-                              <span className="hidden sm:flex items-center">
-                                <Clock className="h-3 w-3 lg:h-4 lg:w-4 mr-1" />
-                                {session.duration}
-                              </span>
-                              <span className="hidden md:inline">{session.messageCount} messages</span>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="text-gray-400 hover:text-gray-600 h-6 w-6 lg:h-8 lg:w-8"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                }}
-                              >
-                                <MoreHorizontal className="h-3 w-3 lg:h-4 lg:w-4" />
-                              </Button>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
 
-                {filteredSessions.length === 0 && (
-                  <div className="text-center py-12">
-                    <div className="w-16 h-16 lg:w-20 lg:h-20 bg-gradient-to-r from-purple-200 to-orange-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <Calendar className="h-8 w-8 lg:h-10 lg:w-10 text-purple-500" />
+                  {filteredSessions.length === 0 && !loading && (
+                    <div className="text-center py-12">
+                      <div className="w-16 h-16 lg:w-20 lg:h-20 bg-gradient-to-r from-purple-200 to-orange-200 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <Calendar className="h-8 w-8 lg:h-10 lg:w-10 text-purple-500" />
+                      </div>
+                      <div>
+                        <h3 className="text-base lg:text-lg font-medium text-gray-700 mb-2">No Conversations Found</h3>
+                        <p className="text-sm lg:text-base text-gray-500">{searchQuery ? "Try adjusting your search terms" : "Start a conversation to see it here"}</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-base lg:text-lg font-medium text-gray-700 mb-2">No Conversations Found</h3>
-                      <p className="text-sm lg:text-base text-gray-500">Try adjusting your search terms</p>
-                    </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

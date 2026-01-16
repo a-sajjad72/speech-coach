@@ -12,6 +12,7 @@ export default function SpeechCoach() {
   const [currentLanguage, setCurrentLanguage] = useState("Spanish")
   const [currentTopic, setCurrentTopic] = useState("Travel Planning")
   const [selectedModel, setSelectedModel] = useState("Llama-3-8B-Instruct (Q4_K_M)")
+  const [sessionToResume, setSessionToResume] = useState<string | null>(null)
 
   const renderCurrentView = () => {
     switch (currentView) {
@@ -25,6 +26,7 @@ export default function SpeechCoach() {
             onLanguageChange={setCurrentLanguage}
             onTopicChange={setCurrentTopic}
             onModelChange={setSelectedModel}
+            initialSessionId={sessionToResume}
           />
         )
       case "settings":
@@ -38,7 +40,16 @@ export default function SpeechCoach() {
           />
         )
       case "history":
-        return <ConversationHistory onNavigate={setCurrentView} />
+        return (
+          <ConversationHistory
+            onNavigate={setCurrentView}
+            onResumeSession={(sessionId) => {
+              console.log("Setting session to resume:", sessionId)
+              setSessionToResume(sessionId)
+              setCurrentView("conversation")
+            }}
+          />
+        )
       default:
         return null
     }

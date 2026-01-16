@@ -4,6 +4,9 @@ from pydantic import BaseModel
 
 class SessionCreateRequest(BaseModel):
     mode: str
+    topic: Optional[str] = None
+    language: Optional[str] = None
+    model: Optional[str] = None
 
 
 class SessionCreateResponse(BaseModel):
@@ -35,5 +38,11 @@ class Message(BaseModel):
 class ChatHistoryResponse(BaseModel):
     session_id: str
     messages: List[Message]
+
+
+class UpdateMetadataRequest(BaseModel):
+    topic: Optional[str] = None
+    language: Optional[str] = None
+    model: Optional[str] = None
 
 
